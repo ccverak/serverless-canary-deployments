@@ -1,5 +1,7 @@
 'use strict'
 
+const _ = require('lodash/fp');
+
 class ServerlessCanaryDeployments {
   constructor (serverless, options) {
     this.serverless = serverless;
@@ -23,11 +25,12 @@ class ServerlessCanaryDeployments {
       this.withDeploymentPreferencesFns
         .forEach((fn) => {
           const normalizedFn = this.naming.getLambdaLogicalId(fn.name);
-          const compiled = compiledTpl.Resources[normalizedFn];
+          const resources = compiledTpl.Resources;
           const fnVersion = Object.keys(compiledTpl.Resources).find(el => el.startsWith('HelloLambdaVersion'));  // FIXME
           const deploymentSettings = fn.obj.deploymentPreference;
           const deploymentGroupName = this.addFunctionDeploymentGroup({ deploymentSettings, compiledTpl, normalizedFn })
           this.addFunctionAlias({ deploymentSettings, compiledTpl, normalizedFn, deploymentGroupName, fnVersion })
+          this.addAliasToEvents({ deploymentSettings, normalizedFn, resources });
         });
     }
   }
@@ -77,7 +80,7 @@ class ServerlessCanaryDeployments {
         ApplicationName: {
           Ref: codeDeployAppName
         },
-        AlarmConfiguration: {
+        AlarmConfiguration: {  // FIX: add only if alarms present
           Alarms: deploymentSettings.alarms.map(a => ({ Name: { Ref: a } })),
           Enabled: true
         },
@@ -109,6 +112,24 @@ class ServerlessCanaryDeployments {
     };
     compiledTpl.Resources[logicalName] = deploymentGroup;
     return logicalName;
+  }
+
+  addAliasToEvents({ deploymentSettings, normalizedFn, resources }) {
+    const fnAlias = '${HelloLambdaFunctionAliaslive}';  // FIXME: parametrize alias
+    const uri = {
+      "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HelloLambdaFunctionAliaslive}/invocations"
+    }
+    const getIntegrationUriParts = _.prop('Properties.Integration.Uri.Fn::Join[1]');
+    const getFnPart = _.find(_.has('Fn::GetAtt'));
+    const extractFnName = _.prop('Fn::GetAtt[0]');
+    const entries = Object.values(resources)
+      .filter(resource => resource.Type === 'AWS::ApiGateway::Method')
+      // .map(method => getIntegrationUriParts(method))
+      // .map(method => getFnPart(method))
+      // .find(method => extractFnName(getFnPart(method)) === normalizedFn);
+    // entry['Fn::GetAtt'].splice(1, 0, `:${deploymentSettings.alias}`);
+    entries[0]['Properties']['Integration']['Uri'] = uri;
+    console.log(entries);
   }
 
   addFunctionAlias({ deploymentSettings = {}, codeDeployApp = 'AwsnodejsdevDeploymentApplication', compiledTpl, normalizedFn, appName, deploymentGroupName, fnVersion }) {
