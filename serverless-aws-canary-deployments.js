@@ -1,9 +1,8 @@
-'use strict'
-
 const _ = require('lodash/fp');
+const CfGenerators = require('./lib/CfTemplateGenerators');
 
 class ServerlessCanaryDeployments {
-  constructor (serverless, options) {
+  constructor(serverless, options) {
     this.serverless = serverless;
     this.options = options;
     this.awsProvider = this.serverless.getProvider('aws');
@@ -14,7 +13,13 @@ class ServerlessCanaryDeployments {
       .filter(fn => !!fn.obj.deploymentPreference);
     this.hooks = {
       'before:package:finalize': this.canary.bind(this)
-    }
+    };
+  }
+
+  get codeDeployAppName() {
+    const stackName = this.naming.getStackName();
+    const normalizedStackName = this.naming.normalizeNameToAlphaNumericOnly(stackName);
+    return `${normalizedStackName}DeploymentApplication`;
   }
 
   canary() {
@@ -28,48 +33,22 @@ class ServerlessCanaryDeployments {
           const resources = compiledTpl.Resources;
           const fnVersion = Object.keys(compiledTpl.Resources).find(el => el.startsWith('HelloLambdaVersion'));  // FIXME
           const deploymentSettings = fn.obj.deploymentPreference;
-          const deploymentGroupName = this.addFunctionDeploymentGroup({ deploymentSettings, compiledTpl, normalizedFn })
-          this.addFunctionAlias({ deploymentSettings, compiledTpl, normalizedFn, deploymentGroupName, fnVersion })
+          const deploymentGroupName = this.addFunctionDeploymentGroup({ deploymentSettings, compiledTpl, normalizedFn });
+          this.addFunctionAlias({ deploymentSettings, compiledTpl, normalizedFn, deploymentGroupName, fnVersion });
           this.addAliasToEvents({ deploymentSettings, normalizedFn, resources });
         });
     }
   }
 
   addCodeDeployApp(compiledTpl) {
-    const stackName = this.naming.getStackName();
-    const normalizedStackName = this.naming.normalizeNameToAlphaNumericOnly(stackName);
-    const codeDeployAppName = `${normalizedStackName}DeploymentApplication`;
-    const codeDeployProps = {
-      Type: 'AWS::CodeDeploy::Application',
-      Properties: {
-        ComputePlatform: 'Lambda'
-      }
-    };
-    compiledTpl.Resources[codeDeployAppName] = codeDeployProps;
+    const resourceName = this.codeDeployAppName;
+    const template = CfGenerators.codeDeploy.buildApplication(resourceName);
+    Object.assign(compiledTpl.Resources, template);
   }
 
   addCodeDeployRole(compiledTpl) {
-    const logicalName = 'CodeDeployServiceRole';
-    const codeDeployRole = {
-      Type: 'AWS::IAM::Role',
-      Properties: {
-        ManagedPolicyArns: [
-          'arn:aws:iam::aws:policy/service-role/AWSCodeDeployRoleForLambda',
-          'arn:aws:iam::aws:policy/AWSLambdaFullAccess' // FIX: determine exactly what permissions are needed for executing hooks
-        ],
-        AssumeRolePolicyDocument: {
-          Version: '2012-10-17',
-          Statement: [
-            {
-              Action: [ 'sts:AssumeRole' ],
-              Effect: 'Allow',
-              Principal: { Service: [ 'codedeploy.amazonaws.com' ] }
-            }
-          ]
-        }
-      }
-    };
-    compiledTpl.Resources[logicalName] = codeDeployRole;
+    const template = CfGenerators.iam.buildCodeDeployRole();
+    Object.assign(compiledTpl.Resources, template);
   }
 
   addFunctionDeploymentGroup({ codeDeployAppName = 'AwsnodejsdevDeploymentApplication', deploymentSettings, compiledTpl, normalizedFn }) {
@@ -117,22 +96,18 @@ class ServerlessCanaryDeployments {
   addAliasToEvents({ deploymentSettings, normalizedFn, resources }) {
     const fnAlias = '${HelloLambdaFunctionAliaslive}';  // FIXME: parametrize alias
     const uri = {
-      "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HelloLambdaFunctionAliaslive}/invocations"
-    }
+      'Fn::Sub': 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HelloLambdaFunctionAliaslive}/invocations'
+    };
     const getIntegrationUriParts = _.prop('Properties.Integration.Uri.Fn::Join[1]');
     const getFnPart = _.find(_.has('Fn::GetAtt'));
     const extractFnName = _.prop('Fn::GetAtt[0]');
     const entries = Object.values(resources)
       .filter(resource => resource.Type === 'AWS::ApiGateway::Method')
-      // .map(method => getIntegrationUriParts(method))
-      // .map(method => getFnPart(method))
-      // .find(method => extractFnName(getFnPart(method)) === normalizedFn);
-    // entry['Fn::GetAtt'].splice(1, 0, `:${deploymentSettings.alias}`);
-    entries[0]['Properties']['Integration']['Uri'] = uri;
-    console.log(entries);
+    entries[0].Properties.Integration.Uri = uri;
   }
 
   addFunctionAlias({ deploymentSettings = {}, codeDeployApp = 'AwsnodejsdevDeploymentApplication', compiledTpl, normalizedFn, appName, deploymentGroupName, fnVersion }) {
+    const logicalName = `${normalizedFn}Alias${deploymentSettings.alias}`;
     const beforeHookFn = this.naming.getLambdaLogicalId(deploymentSettings.preTrafficHook);
     const afterHookFn = this.naming.getLambdaLogicalId(deploymentSettings.postTrafficHook);
     const fnAlias = {
@@ -151,7 +126,7 @@ class ServerlessCanaryDeployments {
         Name: deploymentSettings.alias
       }
     };
-    compiledTpl.Resources[`${normalizedFn}Alias${deploymentSettings.alias}`] = fnAlias;
+    compiledTpl.Resources[logicalName] = fnAlias;
   }
 }
 
