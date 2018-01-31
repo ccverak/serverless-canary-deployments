@@ -22,74 +22,49 @@ class ServerlessCanaryDeployments {
     return `${normalizedStackName}DeploymentApplication`;
   }
 
+  get compiledTpl() {
+    return this.service.provider.compiledCloudFormationTemplate;
+  }
+
   canary() {
     if (this.withDeploymentPreferencesFns.length > 0) {
       const compiledTpl = this.service.provider.compiledCloudFormationTemplate;
-      this.addCodeDeployApp(compiledTpl);
-      this.addCodeDeployRole(compiledTpl);
+      this.addCodeDeployApp();
+      this.addCodeDeployRole();
       this.withDeploymentPreferencesFns
         .forEach((fn) => {
           const normalizedFn = this.naming.getLambdaLogicalId(fn.name);
           const resources = compiledTpl.Resources;
           const fnVersion = Object.keys(compiledTpl.Resources).find(el => el.startsWith('HelloLambdaVersion'));  // FIXME
           const deploymentSettings = fn.obj.deploymentPreference;
-          const deploymentGroupName = this.addFunctionDeploymentGroup({ deploymentSettings, compiledTpl, normalizedFn });
+          const deploymentGroupName = this.addFunctionDeploymentGroup({ deploymentSettings, normalizedFnName: normalizedFn });
+          console.log(this.compiledTpl);
           this.addFunctionAlias({ deploymentSettings, compiledTpl, normalizedFn, deploymentGroupName, fnVersion });
           this.addAliasToEvents({ deploymentSettings, normalizedFn, resources });
         });
     }
   }
 
-  addCodeDeployApp(compiledTpl) {
+  addCodeDeployApp() {
     const resourceName = this.codeDeployAppName;
     const template = CfGenerators.codeDeploy.buildApplication(resourceName);
-    Object.assign(compiledTpl.Resources, template);
+    Object.assign(this.compiledTpl.Resources, template);
   }
 
-  addCodeDeployRole(compiledTpl) {
+  addCodeDeployRole() {
     const template = CfGenerators.iam.buildCodeDeployRole();
-    Object.assign(compiledTpl.Resources, template);
+    Object.assign(this.compiledTpl.Resources, template);
   }
 
-  addFunctionDeploymentGroup({ codeDeployAppName = 'AwsnodejsdevDeploymentApplication', deploymentSettings, compiledTpl, normalizedFn }) {
-    const logicalName = `${normalizedFn}DeploymentGroup`;
-    const deploymentGroup = {
-      Type: 'AWS::CodeDeploy::DeploymentGroup',
-      Properties: {
-        ApplicationName: {
-          Ref: codeDeployAppName
-        },
-        AlarmConfiguration: {  // FIX: add only if alarms present
-          Alarms: deploymentSettings.alarms.map(a => ({ Name: { Ref: a } })),
-          Enabled: true
-        },
-        AutoRollbackConfiguration: {
-          Enabled: true,
-          Events: [
-            'DEPLOYMENT_FAILURE',
-            'DEPLOYMENT_STOP_ON_ALARM',
-            'DEPLOYMENT_STOP_ON_REQUEST'
-          ]
-        },
-        ServiceRoleArn: {
-          'Fn::GetAtt': [
-            'CodeDeployServiceRole',
-            'Arn'
-          ]
-        },
-        DeploymentConfigName: {
-          'Fn::Sub': [
-            'CodeDeployDefault.Lambda${ConfigName}',
-            { ConfigName: deploymentSettings.type }
-          ]
-        },
-        DeploymentStyle: {
-          DeploymentType: 'BLUE_GREEN',
-          DeploymentOption: 'WITH_TRAFFIC_CONTROL'
-        }
-      }
+  addFunctionDeploymentGroup({ deploymentSettings, normalizedFnName }) {
+    const logicalName = `${normalizedFnName}DeploymentGroup`;
+    const params = {
+      normalizedFnName,
+      codeDeployAppName: this.codeDeployAppName,
+      deploymentSettings
     };
-    compiledTpl.Resources[logicalName] = deploymentGroup;
+    const template = CfGenerators.codeDeploy.buildFnDeploymentGroup(params);
+    Object.assign(this.compiledTpl.Resources, template);
     return logicalName;
   }
 
